@@ -1,97 +1,108 @@
+/*
+** listener.c -- a datagram sockets "server" demo
+*/
+
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <unistd.h>
 #include <errno.h>
 #include <string.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
-#include <netdb.h>
 #include <arpa/inet.h>
-#include <sys/wait.h>
-#include <signal.h>
-#include <ctype.h>
+#include <netdb.h>
 
-#define PORT 1200
-#define BACKLOG 5 // pending connections queue will hold
-#define MAX_SADDR 100
+#define UPORT "4950" // the port users will be connecting to
+#define TPORT "5950" // I don't think any one will use this port
+#define chunk 256 // server send 256b at a time
 
-int main () {
-  fd_set master;
-  fd_set read_fds;
-  int fdmax;
+#define MAXBUFLEN 100
 
-  int listener, newfd;
+// get sockaddr, IPv4 or IPv6:
+void *get_in_addr(struct sockaddr *sa)
+{
+  if (sa->sa_family == AF_INET) {
+    return &(((struct sockaddr_in*)sa)->sin_addr);
+  }
+
+  return &(((struct sockaddr_in6*)sa)->sin6_addr);
+}
+
+int main(void)
+{
+  int sockfd;
   struct addrinfo hints, *servinfo, *p;
-  struct sockaddr_storage remoteaddr;
-  struct sockaddr_in sa;
-  int yes = 1;
-  int i, j;
-  int nbytes;
+  int rv;
+  int numbytes;
+  struct sockaddr_storage their_addr;
+  char buf[MAXBUFLEN];
+  socklen_t addr_len;
+  char s[INET6_ADDRSTRLEN];
+  char *msg_ok = "ok";
+  char *msg_error = "error";
 
-  FD_ZERO(&master);
-  FD_ZERO(&read_fds);
+  memset(&hints, 0, sizeof hints);
+  hints.ai_family = AF_UNSPEC; // set to AF_INET to force IPv4
+  hints.ai_socktype = SOCK_DGRAM;
+  hints.ai_flags = AI_PASSIVE; // use my IP
 
-  char server_address[MAX_SADDR];
-  memset(&sa, 0, sizeof sa);
-  gethostname(server_address, MAX_SADDR);
+  if ((rv = getaddrinfo(NULL, UPORT, &hints, &servinfo)) != 0) {
+    fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(rv));
+    return 1;
+  }
 
-  sa.sin_family = AF_INET;
-  sa.sin_port = htons(PORT);
-  sa.sin_addr.s_addr = INADDR_ANY;
-
-  listener = socket(AF_INET, SOCK_STREAM, 0);
-  bind(listener, (struct sockaddr*)&sa, sizeof sa);
-
-  listen(listener, BACKLOG);
-
-  int length = sizeof sa;
-  getsockname(listener, (struct sockaddr*)&sa, &length);
-
-  printf("SERVER_ADDRESS %s\n", server_address);
-  printf("SERVER_PORT %i\n", ntohs(sa.sin_port));
-
-  FD_SET(listener, &master);
-  fdmax = listener;
-
-  // main loop
-  for (;;) {
-    read_fds = master;
-    if (select(fdmax+1, &read_fds, NULL, NULL, NULL) == -1) {
-      perror("select");
-      exit(4);
+  // loop through all the results and bind to the first we can
+  for(p = servinfo; p != NULL; p = p->ai_next) {
+    if ((sockfd = socket(p->ai_family, p->ai_socktype,
+        p->ai_protocol)) == -1) {
+      perror("listener: socket");
+      continue;
     }
 
-    for (i = 0; i <= fdmax; i++) {
-      if (FD_ISSET(i, &read_fds)) {
-        // handling new connection from client
-        if (i == listener) {
-          newfd = accept(listener, NULL, NULL);
-          if (newfd == -1) {
-            perror("accept");
-          } else {
-            FD_SET(newfd, &master);
-            if (newfd > fdmax) {
-              fdmax = newfd;
-            }
-          }
-        } else { // handle data from client
-          char *buf = (char*)malloc(256);
-          nbytes = recv(i, buf, 256, 0);
-          if (nbytes <= 0) {
-            close(i);
-            FD_CLR(i, &master);
-          }
-          printf("%s\n", buf);
-          toTitleCaps(buf);
-          send(i, buf, nbytes, 0);
+    if (bind(sockfd, p->ai_addr, p->ai_addrlen) == -1) {
+      close(sockfd);
+      perror("listener: bind");
+      continue;
+    }
 
-          free(buf);
-        }
-      }
+    break;
+  }
+
+  if (p == NULL) {
+    fprintf(stderr, "listener: failed to bind socket\n");
+    return 2;
+  }
+
+  freeaddrinfo(servinfo);
+
+  printf("listener: waiting to recvfrom...\n");
+
+  //TODO: we should loop and listen on TPORT too
+
+  addr_len = sizeof their_addr;
+  if ((numbytes = recvfrom(sockfd, buf, MAXBUFLEN-1 , 0,
+    (struct sockaddr *)&their_addr, &addr_len)) == -1) {
+    perror("recvfrom");
+    exit(1);
+  } else {
+    //TODO: check if file exists and send message accordingly
+    if (access(buf, F_OK) != -1) {
+      sendto(sockfd, msg_ok, strlen(msg_ok), 0, (struct sockaddr *)&their_addr, addr_len);
+    } else {
+      sendto(sockfd, msg_error, strlen(msg_error), 0, (struct sockaddr *)&their_addr, addr_len);
     }
   }
+
+  printf("listener: got packet from %s\n",
+    inet_ntop(their_addr.ss_family,
+      get_in_addr((struct sockaddr *)&their_addr),
+      s, sizeof s));
+  printf("listener: packet is %d bytes long\n", numbytes);
+  buf[numbytes] = '\0';
+  printf("listener: packet contains \"%s\"\n", buf);
+
+  close(sockfd);
 
   return 0;
 }
