@@ -12,16 +12,18 @@
 #define UPORT "4950"
 #define TPORT "5950"
 #define SERVER_ADDR "jason-TP300LA" //TODO: Need to update accordingly
-#define MAXBUFLEN 100
+#define MAXBUFLEN 256
+#define MAXDATASIZE 256
 
 int main(int argc, char *argv[])
 {
   int sockfd;
-  struct addrinfo hints, *servinfo, *p;
+  struct addrinfo hints_udp, hints_tcp, *servinfo, *p;
   int rv;
   int numbytes;
   char buf[MAXBUFLEN];
   struct sockaddr_storage their_addr;
+  int bytesRead = 1;
   socklen_t addr_len;
 
   if (argc != 3) {
@@ -29,11 +31,15 @@ int main(int argc, char *argv[])
     exit(1);
   }
 
-  memset(&hints, 0, sizeof hints);
-  hints.ai_family = AF_UNSPEC;
-  hints.ai_socktype = SOCK_DGRAM;
+  memset(&hints_udp, 0, sizeof hints_udp);
+  hints_udp.ai_family = AF_UNSPEC;
+  hints_udp.ai_socktype = SOCK_DGRAM;
 
-  if ((rv = getaddrinfo(SERVER_ADDR, UPORT, &hints, &servinfo)) != 0) {
+  memset(&hints_tcp, 0, sizeof hints_tcp);
+  hints_tcp.ai_family = AF_UNSPEC;
+  hints_tcp.ai_socktype = SOCK_STREAM;
+
+  if ((rv = getaddrinfo(SERVER_ADDR, UPORT, &hints_udp, &servinfo)) != 0) {
     fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(rv));
     return 1;
   }
@@ -71,14 +77,58 @@ int main(int argc, char *argv[])
   } else {
     printf("server sent %s\n", buf);
     if (strcmp("ok", buf) == 0) {
-      printf("LEEORY\n");
-    } else { // file doesn't exist
+      printf("File exists\n");
+      // connect through tcp and read
+      freeaddrinfo(servinfo);
+      if ((rv = getaddrinfo(SERVER_ADDR, TPORT, &hints_tcp, &servinfo)) != 0) {
+        fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(rv));
+        return 1;
+      }
+
+      for(p = servinfo; p != NULL; p = p->ai_next) {
+        if ((sockfd = socket(p->ai_family, p->ai_socktype,
+            p->ai_protocol)) == -1) {
+          perror("client: socket");
+          continue;
+        }
+
+        if (connect(sockfd, p->ai_addr, p->ai_addrlen) == -1) {
+          perror("client: connect");
+          close(sockfd);
+          continue;
+        }
+
+        freeaddrinfo(servinfo);
+        // if ((numbytes = recv(sockfd, buf, MAXDATASIZE-1, 0)) == -1) {
+        //   perror("recv");
+        //   exit(1);
+        // }
+
+        FILE *out;
+        out = fopen(argv[2], "w");
+        while(bytesRead > 0) {
+          bytesRead = recv(sockfd, buf, MAXDATASIZE, 0);
+          buf[bytesRead] = '\0'; // get rid of the random characters
+          if (bytesRead > 0) {
+            printf("bytes read: %i\n", bytesRead);
+            printf("client: received '%s'\n",buf);
+            fwrite(buf, 1, strlen(buf), out);
+          }
+          // write to file
+        }
+        fclose(out);
+
+        buf[numbytes] = '\0';
+
+        close(sockfd);
+
+      }
+
+    } else {
       printf("File doesn't exist\n");
       exit(1);
     }
   }
-
-  freeaddrinfo(servinfo);
 
   printf("talker: sent %d bytes to %s\n", numbytes, SERVER_ADDR);
   close(sockfd);
