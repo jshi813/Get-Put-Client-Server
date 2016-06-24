@@ -2,13 +2,8 @@ CS456 A1 - Introductory Socket Programming
 
 get file:
 ./client.sh get remote_filename local_filename
+server gets file from current directory
 
 put file:
 ./client.sh put local_filename remote_filename
-CS456 A1 - Introductory Socket Programming
-
-get file:
-./client.sh get remote_filename local_filename
-
-put file:
-./client.sh put local_filename remote_filename
+server writes file to current directory
