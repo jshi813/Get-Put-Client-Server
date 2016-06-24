@@ -18,6 +18,7 @@
 #define chunk 256 // server send 256b at a time
 #define BACKLOG 5
 #define MAXBUFLEN 256
+#define MAXDATASIZE 256
 
 // get sockaddr, IPv4 or IPv6:
 void *get_in_addr(struct sockaddr *sa)
@@ -29,19 +30,67 @@ void *get_in_addr(struct sockaddr *sa)
   return &(((struct sockaddr_in6*)sa)->sin6_addr);
 }
 
-void chunked_send_file(int sockfd, char *buf) {
+void chunked_send_file(int sockfd, char *filename) {
   int total = 0;
-  int file_size = strlen(buf);
+  int file_size = strlen(filename);
   int rv;
+  char *file_buffer = 0;
 
-  while (total < file_size) {
-    rv = send(sockfd, buf+total, 256, 0);
-    printf("chunk sent: %i\n", rv);
-    if (rv == -1) {
-      perror("chunked send:");
-      break;
+
+  FILE *fp = fopen(filename, "r");
+  if (fp) {
+    fseek(fp, 0, SEEK_END);
+    file_size = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+    file_buffer = malloc(file_size);
+    if (file_buffer) {
+      rv = fread(file_buffer, 1, file_size, fp);
     }
-    total += rv;
+    file_buffer[rv] = '\0';
+    fclose(fp);
+  } else {
+    printf("File doesn't exist\n");
+    exit(1);
+  }
+
+  if (file_buffer) {
+    while (total < file_size) {
+      rv = send(sockfd, file_buffer+total, 256, 0);
+      printf("chunk sent: %i\n", rv);
+      if (rv == -1) {
+        perror("chunked send:");
+        break;
+      }
+      total += rv;
+    }
+  }
+}
+
+void chunked_write_file(int sockfd, char *filename) {
+  char buf[MAXBUFLEN];
+  clear_buf(buf);
+  printf("%s\n", "writing to file");
+  int bytesRead = 1;
+
+  FILE *out;
+  out = fopen(filename, "w");
+
+  while(bytesRead > 0) {
+    bytesRead = recv(sockfd, buf, MAXDATASIZE, 0);
+    buf[bytesRead] = '\0'; // get rid of the random characters
+    if (bytesRead > 0) {
+      printf("bytes read: %i\n", bytesRead);
+      printf("client: received '%s'\n",buf);
+      fwrite(buf, 1, strlen(buf), out);
+    }
+  }
+  fclose(out);
+}
+
+void clear_buf(char *buf) {
+  int i;
+  for (i = 0; i < MAXBUFLEN-1; i++) {
+    buf[i] = '\0';
   }
 }
 
@@ -53,16 +102,19 @@ int main(void)
   int numbytes;
   struct sockaddr_storage their_addr;
   char buf[MAXBUFLEN];
+  char filename[MAXBUFLEN];
+  char op[2];
   socklen_t addr_len, sin_size;
   char s[INET6_ADDRSTRLEN];
   char *msg_ok = "ok";
   char *msg_error = "error";
 
   // variables for sending file
-  int expectTCP = 0;
-  char *file_buffer = 0;;
+  int expectTCP = 1;
+  char *file_buffer = 0;
   int file_size;
 
+  op[1] = '\0';
   memset(&hints_udp, 0, sizeof hints_udp);
   memset(&hints_tcp, 0, sizeof hints_tcp);
   hints_udp.ai_family = AF_UNSPEC; // set to AF_INET to force IPv4
@@ -100,7 +152,6 @@ int main(void)
 
   printf("listener: waiting to recvfrom...\n");
 
-  //TODO: we should loop and listen on TPORT too
   hints_tcp.ai_family = AF_UNSPEC; // set to AF_INET to force IPv4
   hints_tcp.ai_socktype = SOCK_STREAM;
   hints_tcp.ai_flags = AI_PASSIVE; // use my IP
@@ -140,19 +191,28 @@ int main(void)
 
   addr_len = sizeof their_addr;
   while(1) {
-
     if ((numbytes = recvfrom(sockfd, buf, MAXBUFLEN-1 , 0,
       (struct sockaddr *)&their_addr, &addr_len)) == -1) {
       perror("recvfrom");
       exit(1);
     } else {
+      strncpy(filename, buf, strlen(buf)-1);
+      op[0] = buf[strlen(buf)-1];
+      printf("filename is %s\n", filename);
+      printf("op is %s\n", op);
       //TODO: check if file exists and send message accordingly
-      if (access(buf, F_OK) != -1) {
-        sendto(sockfd, msg_ok, strlen(msg_ok), 0, (struct sockaddr *)&their_addr, addr_len);
-        expectTCP = 1;
+      if (op[0] == '1') {
+        if (access(filename, F_OK) != -1) {
+          printf("%s\n", msg_ok);
+          sendto(sockfd, msg_ok, strlen(msg_ok), 0, (struct sockaddr *)&their_addr, addr_len);
+          expectTCP = 1;
+        } else {
+          sendto(sockfd, msg_error, strlen(msg_error), 0, (struct sockaddr *)&their_addr, addr_len);
+          expectTCP = 0;
+        }
       } else {
-        sendto(sockfd, msg_error, strlen(msg_error), 0, (struct sockaddr *)&their_addr, addr_len);
-        expectTCP = 0;
+        printf("%s\n", msg_ok);
+        sendto(sockfd, msg_ok, strlen(msg_ok), 0, (struct sockaddr *)&their_addr, addr_len);
       }
     }
     if (expectTCP) {
@@ -169,26 +229,13 @@ int main(void)
       if (!fork()) { // this is the child process
         close(sockfd_tcp); // child doesn't need the listener
 
-        /***************************/
-        FILE *fp = fopen(buf, "r");
-        if (fp) {
-          fseek(fp, 0, SEEK_END);
-          file_size = ftell(fp);
-          fseek(fp, 0, SEEK_SET);
-          file_buffer = malloc(file_size);
-          if (file_buffer) {
-            rv = fread(file_buffer, 1, file_size, fp);
-          }
-          file_buffer[rv] = '\0';
-          fclose(fp);
+        /* handles get/put requests */
+
+        if (op[0] == '1') { // get request
+          chunked_send_file(new_fd, filename);
+        } else { // put request
+          chunked_write_file(new_fd, filename);
         }
-
-        printf("file in server buffer is %s\n", file_buffer);
-
-        if (file_buffer) {
-          chunked_send_file(new_fd, file_buffer);
-        }
-
 
         /***************************/
         close(new_fd);
@@ -201,9 +248,8 @@ int main(void)
           get_in_addr((struct sockaddr *)&their_addr),
           s, sizeof s));
       printf("listener: packet is %d bytes long\n", numbytes);
-      buf[numbytes] = '\0';
-      printf("listener: packet contains \"%s\"\n", buf);
     }
+    clear_buf(buf);
   }
 
   close(sockfd);

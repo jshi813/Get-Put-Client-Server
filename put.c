@@ -13,7 +13,48 @@
 #define TPORT "5950"
 #define SERVER_ADDR "jason-TP300LA" //TODO: Need to update accordingly
 #define MAXBUFLEN 256
-#define MAXDATASIZE 256
+
+void chunked_send_file(int sockfd, char *buf) {
+  int total = 0;
+  int file_size = strlen(buf);
+  int rv;
+  char *file_buffer = 0;
+
+  FILE *fp = fopen(buf, "r");
+  if (fp) {
+    fseek(fp, 0, SEEK_END);
+    file_size = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+    file_buffer = malloc(file_size);
+    if (file_buffer) {
+      rv = fread(file_buffer, 1, file_size, fp);
+    }
+    file_buffer[rv] = '\0';
+    fclose(fp);
+  } else {
+    printf("File doesn't exist\n");
+    exit(1);
+  }
+
+  if (file_buffer) {
+    while (total < file_size) {
+      rv = send(sockfd, file_buffer+total, 256, 0);
+      printf("chunk sent: %i\n", rv);
+      if (rv == -1) {
+        perror("chunked send:");
+        break;
+      }
+      total += rv;
+    }
+  }
+}
+
+void clear_buf(char *buf) {
+  int i;
+  for (i = 0; i < MAXBUFLEN-1; i++) {
+    buf[i] = '\0';
+  }
+}
 
 int main(int argc, char *argv[])
 {
@@ -23,11 +64,19 @@ int main(int argc, char *argv[])
   int numbytes;
   char buf[MAXBUFLEN];
   struct sockaddr_storage their_addr;
-  int bytesRead = 1;
+
+  char msg[strlen(argv[2])+2]; // use last byte to indicate get/put: 1 - get; 0 - put;
+  strncpy(msg, argv[2], strlen(argv[2]));
+  msg[strlen(argv[2])] = '0';
+  msg[strlen(argv[2])+1] = '\0';
+  printf("udp msg is %s\n", msg);
+
+  clear_buf(buf);
+
   socklen_t addr_len;
 
   if (argc != 3) {
-    fprintf(stderr,"usage: ./clientGet src dst\n");
+    fprintf(stderr,"usage: ./put src dst\n");
     exit(1);
   }
 
@@ -60,7 +109,15 @@ int main(int argc, char *argv[])
     return 2;
   }
 
-  if ((numbytes = sendto(sockfd, argv[1], strlen(argv[1]), 0,
+  freeaddrinfo(servinfo);
+
+  // exit if file doesn't exist
+  if (access(argv[1], F_OK) == -1) {
+    printf("File doesn't exist\n");
+    exit(1);
+  }
+
+  if ((numbytes = sendto(sockfd, msg, strlen(msg), 0,
        p->ai_addr, p->ai_addrlen)) == -1) {
     perror("talker: sendto");
     exit(1);
@@ -79,7 +136,6 @@ int main(int argc, char *argv[])
     if (strcmp("ok", buf) == 0) {
       printf("File exists\n");
       // connect through tcp and read
-      freeaddrinfo(servinfo);
       if ((rv = getaddrinfo(SERVER_ADDR, TPORT, &hints_tcp, &servinfo)) != 0) {
         fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(rv));
         return 1;
@@ -97,41 +153,19 @@ int main(int argc, char *argv[])
           close(sockfd);
           continue;
         }
-
-        freeaddrinfo(servinfo);
-        // if ((numbytes = recv(sockfd, buf, MAXDATASIZE-1, 0)) == -1) {
-        //   perror("recv");
-        //   exit(1);
-        // }
-
-        FILE *out;
-        out = fopen(argv[2], "w");
-        while(bytesRead > 0) {
-          bytesRead = recv(sockfd, buf, MAXDATASIZE, 0);
-          buf[bytesRead] = '\0'; // get rid of the random characters
-          if (bytesRead > 0) {
-            printf("bytes read: %i\n", bytesRead);
-            printf("client: received '%s'\n",buf);
-            fwrite(buf, 1, strlen(buf), out);
-          }
-          // write to file
-        }
-        fclose(out);
-
-        buf[numbytes] = '\0';
-
-        close(sockfd);
-
       }
+
+      freeaddrinfo(servinfo);
+
+      chunked_send_file(sockfd, argv[1]);
+
+      close(sockfd);
 
     } else {
       printf("File doesn't exist\n");
       exit(1);
     }
   }
-
-  printf("talker: sent %d bytes to %s\n", numbytes, SERVER_ADDR);
-  close(sockfd);
 
   return 0;
 }

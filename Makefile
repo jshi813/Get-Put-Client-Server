@@ -1,11 +1,14 @@
-all: server clientGet
+all: server get put
 	chmod +x client.sh server.sh
 
 server: server.c
 	gcc server.c -o server
 
-clientGet: clientGet.c
-	gcc clientGet.c -o clientGet
+get: get.c
+	gcc get.c -o get
+
+put: put.c
+	gcc put.c -o put
 
 clean:
-	rm server clientGet
+	rm server get put
