@@ -30,6 +30,14 @@ void *get_in_addr(struct sockaddr *sa)
   return &(((struct sockaddr_in6*)sa)->sin6_addr);
 }
 
+
+void clear_buf(char *buf) {
+  int i;
+  for (i = 0; i < MAXBUFLEN-1; i++) {
+    buf[i] = '\0';
+  }
+}
+
 void chunked_send_file(int sockfd, char *filename) {
   int total = 0;
   int file_size = strlen(filename);
@@ -85,13 +93,6 @@ void chunked_write_file(int sockfd, char *filename) {
     }
   }
   fclose(out);
-}
-
-void clear_buf(char *buf) {
-  int i;
-  for (i = 0; i < MAXBUFLEN-1; i++) {
-    buf[i] = '\0';
-  }
 }
 
 int main(void)
